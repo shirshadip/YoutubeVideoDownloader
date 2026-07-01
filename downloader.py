@@ -58,13 +58,93 @@ class YouTubeDownloader:
     tailored for the Streamlit UI.
     """
 
-    def __init__(self, work_dir: str) -> None:
+    def __init__(
+        self,
+        work_dir: str,
+        cookies_file: Optional[str] = None,
+        cookies_from_browser: Optional[str] = None,
+    ) -> None:
         """
         Args:
             work_dir: Base directory where per-download temp folders are created.
+            cookies_file: Optional path to a Netscape-format cookies file used
+                by yt-dlp for authenticated requests.
+            cookies_from_browser: Optional browser name such as "chrome",
+                "edge", or "firefox" to let yt-dlp use browser cookies.
         """
         self.work_dir = work_dir
+        self.cookies_file = self._resolve_cookies_file(cookies_file)
+        self.cookies_from_browser = self._normalize_browser_name(cookies_from_browser)
         ensure_directory(self.work_dir)
+
+    @staticmethod
+    def _resolve_cookies_file(cookies_file: Optional[str]) -> Optional[str]:
+        """Locate a usable cookies file from the caller, environment, or project defaults."""
+        candidate_paths = []
+        if cookies_file:
+            candidate_paths.append(cookies_file)
+
+        candidate_paths.extend(
+            [
+                os.getenv("YOUTUBE_COOKIES_FILE"),
+                os.getenv("YT_DLP_COOKIES"),
+                os.getenv("COOKIES_FILE"),
+            ]
+        )
+
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        candidate_paths.extend(
+            [
+                os.path.join(base_dir, "cookies.txt"),
+                os.path.join(base_dir, "cookies", "cookies.txt"),
+                os.path.join(base_dir, "downloads", "cookies.txt"),
+            ]
+        )
+
+        for candidate in candidate_paths:
+            if not candidate:
+                continue
+            expanded = os.path.expanduser(candidate)
+            if os.path.isfile(expanded):
+                return expanded
+        return None
+
+    @staticmethod
+    def _normalize_browser_name(browser_name: Optional[str]) -> Optional[str]:
+        """Normalize a browser name into the value yt-dlp expects."""
+        if not browser_name:
+            return None
+        normalized = browser_name.strip().lower()
+        aliases = {
+            "chrome": "chrome",
+            "google-chrome": "chrome",
+            "edge": "edge",
+            "msedge": "edge",
+            "firefox": "firefox",
+            "mozilla-firefox": "firefox",
+            "brave": "brave",
+            "opera": "opera",
+            "safari": "safari",
+        }
+        return aliases.get(normalized, normalized)
+
+    def _build_common_options(self) -> Dict[str, Any]:
+        """Return the shared yt-dlp options used for metadata and downloads."""
+        options: Dict[str, Any] = {
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["web_safari", "android", "tv_embedded"],
+                }
+            },
+        }
+        if self.cookies_file:
+            options["cookies"] = self.cookies_file
+        elif self.cookies_from_browser:
+            options["cookiesfrombrowser"] = [self.cookies_from_browser]
+        return options
 
     # ------------------------------------------------------------------ #
     # Metadata
@@ -84,12 +164,8 @@ class YouTubeDownloader:
         Raises:
             VideoUnavailableError, AgeRestrictedError, NetworkError, DownloaderError
         """
-        ydl_opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "skip_download": True,
-            "noplaylist": True,
-        }
+        ydl_opts = self._build_common_options()
+        ydl_opts.update({"skip_download": True})
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -189,22 +265,22 @@ class YouTubeDownloader:
         ensure_directory(output_dir)
         format_selector = self._build_format_selector(quality_label)
 
-        ydl_opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "noplaylist": True,
-            "format": format_selector,
-            "merge_output_format": "mp4",
-            "outtmpl": os.path.join(output_dir, "%(title).150s.%(ext)s"),
-            "restrictfilenames": False,
-            "progress_hooks": [progress_callback] if progress_callback else [],
-            "postprocessors": [
-                {
-                    "key": "FFmpegVideoConvertor",
-                    "preferedformat": "mp4",
-                }
-            ],
-        }
+        ydl_opts = self._build_common_options()
+        ydl_opts.update(
+            {
+                "format": format_selector,
+                "merge_output_format": "mp4",
+                "outtmpl": os.path.join(output_dir, "%(title).150s.%(ext)s"),
+                "restrictfilenames": False,
+                "progress_hooks": [progress_callback] if progress_callback else [],
+                "postprocessors": [
+                    {
+                        "key": "FFmpegVideoConvertor",
+                        "preferedformat": "mp4",
+                    }
+                ],
+            }
+        )
 
         return self._run_download(url, ydl_opts)
 
@@ -232,21 +308,21 @@ class YouTubeDownloader:
         """
         ensure_directory(output_dir)
 
-        ydl_opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "noplaylist": True,
-            "format": "bestaudio/best",
-            "outtmpl": os.path.join(output_dir, "%(title).150s.%(ext)s"),
-            "progress_hooks": [progress_callback] if progress_callback else [],
-            "postprocessors": [
-                {
-                    "key": "FFmpegExtractAudio",
-                    "preferredcodec": "mp3",
-                    "preferredquality": str(bitrate_kbps),
-                }
-            ],
-        }
+        ydl_opts = self._build_common_options()
+        ydl_opts.update(
+            {
+                "format": "bestaudio/best",
+                "outtmpl": os.path.join(output_dir, "%(title).150s.%(ext)s"),
+                "progress_hooks": [progress_callback] if progress_callback else [],
+                "postprocessors": [
+                    {
+                        "key": "FFmpegExtractAudio",
+                        "preferredcodec": "mp3",
+                        "preferredquality": str(bitrate_kbps),
+                    }
+                ],
+            }
+        )
 
         return self._run_download(url, ydl_opts)
 
@@ -317,6 +393,10 @@ class YouTubeDownloader:
         if "sign in to confirm your age" in message or "age" in message and "restrict" in message:
             return AgeRestrictedError(
                 "This video is age-restricted and cannot be downloaded without authentication."
+            )
+        if "sign in to confirm" in message or "not a bot" in message:
+            return DownloaderError(
+                "YouTube is blocking access with bot protection. Provide a valid cookies file in Netscape format or sign in through a browser and try again."
             )
         if "unable to download webpage" in message or "urlopen error" in message or "network" in message:
             return NetworkError("A network error occurred while contacting YouTube. Please try again.")

@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from importlib.metadata import version as get_package_version
 from typing import Any, Dict, Optional
 
 import streamlit as st
@@ -127,6 +128,8 @@ def init_session_state() -> None:
         "downloaded_file_path": None,
         "downloaded_file_name": None,
         "last_url": "",
+        "cookies_file": os.getenv("YOUTUBE_COOKIES_FILE", ""),
+        "cookies_from_browser": "",
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -143,7 +146,36 @@ def render_sidebar() -> None:
         st.markdown("## ℹ️ Application Info")
         st.markdown(f"**Version:** {APP_VERSION}")
         st.markdown(f"**Python:** {get_python_version()}")
-        st.markdown(f"**yt-dlp:** {yt_dlp.version.__version__}")
+        try:
+            yt_dlp_version = get_package_version("yt-dlp")
+        except Exception:
+            yt_dlp_version = "unknown"
+        st.markdown(f"**yt-dlp:** {yt_dlp_version}")
+
+        cookies_file = st.text_input(
+            "Cookies file (optional)",
+            value=st.session_state.cookies_file,
+            placeholder="C:/path/to/cookies.txt",
+            help="Netscape-format cookies file helps yt-dlp handle YouTube bot checks.",
+        )
+        st.session_state.cookies_file = cookies_file.strip() if cookies_file else ""
+        if st.session_state.cookies_file and not os.path.isfile(os.path.expanduser(st.session_state.cookies_file)):
+            st.warning("The cookies file path does not exist yet. Export or place the file first.", icon="⚠️")
+
+        browser_options = ["", "Chrome", "Edge", "Firefox", "Brave", "Opera", "Safari"]
+        browser_value = st.session_state.cookies_from_browser or ""
+        browser_index = 0
+        if browser_value:
+            browser_index = browser_options.index(
+                next((option for option in browser_options[1:] if option.lower() == browser_value.lower()), "")
+            ) + 1
+        browser_choice = st.selectbox(
+            "Browser cookies (optional)",
+            options=browser_options,
+            index=browser_index,
+            help="If you have a browser session signed into YouTube, yt-dlp can read its cookies directly.",
+        )
+        st.session_state.cookies_from_browser = browser_choice.lower() if browser_choice else ""
 
         ffmpeg_ok = is_ffmpeg_installed()
         pill_class = "pill-green" if ffmpeg_ok else "pill-red"
@@ -197,7 +229,11 @@ def fetch_video_section() -> None:
             st.error("That doesn't look like a valid YouTube URL. Please check and try again.", icon="🚫")
             return
 
-        downloader = YouTubeDownloader(BASE_DOWNLOAD_DIR)
+        downloader = YouTubeDownloader(
+            BASE_DOWNLOAD_DIR,
+            cookies_file=st.session_state.cookies_file or None,
+            cookies_from_browser=st.session_state.cookies_from_browser or None,
+        )
         with st.spinner("Fetching video information..."):
             try:
                 info = downloader.fetch_info(url.strip())
@@ -314,7 +350,11 @@ def download_options_section() -> None:
     st.markdown("---")
     st.markdown("### ⚙️ Download Options")
 
-    downloader = YouTubeDownloader(BASE_DOWNLOAD_DIR)
+    downloader = YouTubeDownloader(
+        BASE_DOWNLOAD_DIR,
+        cookies_file=st.session_state.cookies_file or None,
+        cookies_from_browser=st.session_state.cookies_from_browser or None,
+    )
     qualities = downloader.get_available_qualities(info.get("formats", []))
 
     col1, col2 = st.columns(2)
