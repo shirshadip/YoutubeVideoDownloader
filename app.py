@@ -16,6 +16,9 @@ from typing import Any, Dict, Optional
 
 import streamlit as st
 import yt_dlp
+import shutil
+
+st.write("FFmpeg:", shutil.which("ffmpeg"))
 
 from downloader import (
     AgeRestrictedError,
